@@ -49,7 +49,10 @@ function blueprint() {
 function fail() {
     tput setaf 1
     tput bold
-    echo "$1" > /dev/stderr
+    for arg in "$@"; do
+        echo "$arg" > /dev/stderr
+        tput sgr0
+    done
     tput sgr0
     exit 1
 }
