@@ -10,80 +10,108 @@ WIDTH="1366"       # Width of DisplayLink monitor in pixels
 HEIGHT="768"       # Height of DisplayLink monitor in pixels
 REFRESH="59.9"     # Refresh rate of DisplayLink monitor
 
-modeline=$(\
-    gtf "$WIDTH" "$HEIGHT" "$REFRESH" | \
-    grep -E "Modeline" | \
-    cut -d ' ' -f 4- | \
-    sed -e 's/"//g' \
-)
-dlmodename=$(echo "$modeline" | cut -d ' ' -f 1)
-dlprovider=$( \
-    xrandr --listproviders | \
-    grep modesetting | \
-    cut -d ' ' -f 2 | \
-    sed -e 's/://g' \
-)
-mainstatus=$(xrandr --current | grep "$MAINOUTPUT" | cut -d ' ' -f 3)
-
-# Get attributes from the main provider.
-SEARCHLINE='\([0-9]\+\)x\([0-9]\+\)+\([0-9]\+\)+\([0-9]\+\)'
-mainwidth=$(echo "$mainstatus" | sed 's/'"$SEARCHLINE"'/\1/g')
-mainheight=$(echo "$mainstatus" | sed 's/'"$SEARCHLINE"'/\2/g')
-mainx=$(echo "$mainstatus" | sed 's/'"$SEARCHLINE"'/\3/g')
-mainy=$(echo "$mainstatus" | sed 's/'"$SEARCHLINE"'/\4/g')
-
-# Prints something in blue. Creative, huh?
+# Behave like `echo`, but print the first arg in blue, and subsequent args in
+# regular font. Purely for eyecandy.
 function blueprint() {
-    tput setaf 6; tput bold;
-    for var in "$@"; do
-        printf "$var "
+    tput setaf 6
+    tput bold
+    for arg in "$@"; do
+        printf "$arg "
+        tput sgr0
     done
-    tput sgr0;
+    echo
 }
 
-# Print in bold red text and exit the program.
+# Print in bold red text to stderr and exit the program with status 1.
 function fail() {
-    tput setaf 1; tput bold;
-    echo
-    echo "$1"
+    tput setaf 1
+    tput bold
+    echo "$1" > /dev/stderr
     tput sgr0
     exit 1
 }
 
-blueprint ">> DisplayLink Mode: "
-echo "$modeline"
+# Generate modeline info for the displaylink monitor in xrandr using 'gtf'.
+# We need to do some work on gtf's output to make it usable.
+modeline=$(gtf "$WIDTH" "$HEIGHT" "$REFRESH" |\
+           grep 'Modeline' |\
+           sed 's/\( *Modeline *\)//g' |\
+           sed 's/"//g')
 
-blueprint ">> DisplayLink Provider: "
-echo "$dlprovider"
+dlmodename=$(echo "$modeline" | cut -d ' ' -f 1)
 
-blueprint ">> DisplayLink Mode name: "
-echo "$dlmodename"
+# Try to guess at the DisplayLink provider number. If there are other
+# modesetting providers active, this might fail to grab the correct
+# one.
+dlprovider=$(xrandr --listproviders | \
+             grep 'name:modesetting' | \
+             cut -d ' ' -f 2 | \
+             sed -e 's/://g')
 
-if [ "$dlprovider" ]; then
-    if ! xrandr | grep DVI; then
-        [[ $(xrandr --setprovideroutputsource "$dlprovider" "$MAINPROVIDER") -eq 0 ]] \
-            || fail "Could not set Displayink provider."
-    fi
-
-    if ! xrandr | grep "$dlmodename"; then
-        blueprint ">> Desired DisplayLink mode "
-        printf "$dlmodename"
-        blueprint " does not exist! Creating new mode ...\n"
-        xrandr --newmode "$modeline"
-    fi
-
-    blueprint ">> DisplayLink output: "
-    dloutput=$(xrandr | grep DVI | cut -d ' ' -f 1)
-
-    [ "$dloutput" ] || fail "No displaylink provider found! Dying";
-    echo "$dloutput"
-
-    xrandr --addmode "$dloutput" "$dlmodename"
-    xrandr --output "$MAINOUTPUT" --mode "$mainwidth"x"$mainheight" --pos "$mainx"x"$mainy" --rotate normal \
-        --output "$dloutput" --mode "$dlmodename" --pos "$mainwidth"x"$mainy" --rotate normal \
-        --output VGA1 --off
-else
-    blueprint "<< No displaylink providers found, bailing! >>"
-    echo ""
-    exit 1
+if [ -z "$dlprovider" ]; then
+    fail "<< No displaylink providers found, bailing! >>"
 fi
+
+# Obtain the dimensions of the main provider.
+mainstatus=$(xrandr --current | grep "$MAINOUTPUT" | cut -d ' ' -f 3)
+
+if [ -z "$mainstatus" ]; then
+    fail "<< Couldn't get status of main output $MAINOUTPUT >>"
+fi
+
+# Get the width, height, and position of the main provider from $mainstatus
+# so we can place the DisplayLink output next to it.
+attributes=($(sed \
+            's/\([0-9]\+\)x\([0-9]\+\)+\([0-9]\+\)+\([0-9]\+\)/\1 \2 \3 \4/g' \
+            <<< "$mainstatus"))
+
+# Break attributes into component parts so we can use nice descriptive names.
+mainwidth="${attributes[0]}"
+mainheight="${attributes[1]}"
+mainx="${attributes[2]}"
+mainy="${attributes[3]}"
+
+blueprint ">> Generated modeline:" "$modeline"
+blueprint ">> Detected DisplayLink provider:" "$dlprovider"
+blueprint ">> Main output config:"\
+          "$mainwidth"x"$mainheight" 'resolution'\
+          'at position ('"$mainx"','"$mainy"')'
+
+# DisplayLink monitors usually show up as DVI outputs, but we could probably
+# find a more definitive way to check this.
+if ! xrandr | grep DVI; then
+    blueprint "Associating DL provider with $MAINPROVIDER"
+
+    xrandr --setprovideroutputsource "$dlprovider" "$MAINPROVIDER" > /dev/null
+
+    if [[ "$?" -ne 0 ]]; then
+      fail "Could not set Displayink provider."
+    fi
+fi
+
+if ! xrandr | grep "$dlmodename" > /dev/null; then
+    blueprint ">> Desired DisplayLink mode "
+    printf "$dlmodename"
+    blueprint " does not exist! Creating new mode ...\n"
+    xrandr --newmode $modeline || fail "could not create mode for $dlmodename"
+fi
+
+
+dloutput=$(xrandr | grep DVI | cut -d ' ' -f 1)
+[ "$dloutput" ] || fail " << Failed to find the DisplayLink output >>";
+
+blueprint ">> DisplayLink output: " "$dloutput"
+
+# Add the modeline to the DisplayLink output. Perhaps we shouldn't actually do
+# this every time, and in fact we should look and see if DVI-whatever already
+# has that mode associated with it.
+xrandr --addmode "$dloutput" "$dlmodename"
+
+# The payoff. If this passes, we're in business.
+xrandr --output "$MAINOUTPUT" \
+       --mode "$mainwidth"x"$mainheight" \
+       --pos "$mainx"x"$mainy" --rotate normal \
+       --output "$dloutput" --mode "$dlmodename" \
+       --pos "$mainwidth"x"$mainy" --rotate normal \
+       --output VGA1 --off \
+ || fail "<< Couldn't configure xrandr outputs - try doing it manually >>"
