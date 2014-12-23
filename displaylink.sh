@@ -41,6 +41,7 @@ function blueprint() {
     tput sgr0;
 }
 
+# Print in bold red text and exit the program.
 function fail() {
     tput setaf 1; tput bold;
     echo
