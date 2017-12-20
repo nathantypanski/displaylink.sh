@@ -79,7 +79,7 @@ if [ -z "$dlprovider" ]; then
 fi
 
 # Obtain the dimensions of the main provider.
-mainstatus=$(xrandr --current | grep "$MAINOUTPUT" | cut -d ' ' -f 3)
+mainstatus=$(xrandr --current | grep "$MAINOUTPUT" | cut -d ' ' -f 4)
 
 if [ -z "$mainstatus" ]; then
     fail "<< Couldn't get status of main output $MAINOUTPUT >>"
